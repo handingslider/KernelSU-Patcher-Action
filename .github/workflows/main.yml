@@ -32,21 +32,22 @@ jobs:
       - name: Extract & Detect
         id: process
         run: |
+          mkdir -p output
           wget -q "${{ github.event.inputs.firmware_url }}" -O firmware.zip
           
           if payload-dumper-go -l firmware.zip | grep -q "vendor_boot"; then
-            payload-dumper-go -p vendor_boot firmware.zip
+            payload-dumper-go -o output/ -p vendor_boot firmware.zip
             find output/ -name "vendor_boot.img" -exec mv {} ./vendor_boot.img \;
             cp vendor_boot.img check_kmi.img
           fi
           
           if payload-dumper-go -l firmware.zip | grep -q "init_boot"; then
-            payload-dumper-go -p init_boot firmware.zip
+            payload-dumper-go -o output/ -p init_boot firmware.zip
             find output/ -name "init_boot.img" -exec mv {} ./init_boot.img \;
             [ ! -f check_kmi.img ] && cp init_boot.img check_kmi.img
             echo "target_primary=init_boot.img" >> $GITHUB_OUTPUT
           else
-            payload-dumper-go -p boot firmware.zip
+            payload-dumper-go -o output/ -p boot firmware.zip
             find output/ -name "boot.img" -exec mv {} ./boot.img \;
             [ ! -f check_kmi.img ] && cp boot.img check_kmi.img
             echo "target_primary=boot.img" >> $GITHUB_OUTPUT
