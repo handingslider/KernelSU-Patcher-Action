@@ -17,14 +17,14 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget curl jq unzip
+          sudo apt-get install -y wget curl jq unzip 7z
           
           DUMP_URL=$(curl -s https://api.github.com/repos/ssut/payload-dumper-go/releases/latest | jq -r '.assets[] | select(.name | contains("linux_amd64")) | .browser_download_url')
           wget -q $DUMP_URL -O dumper.tar.gz && tar -xzf dumper.tar.gz
           
           MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
           wget -q $MAGISK_URL -O magisk.apk
-          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+          7z e -y magisk.apk "lib/x86_64/libmagiskboot.so"
           mv libmagiskboot.so magiskboot && chmod +x magiskboot
 
           KSU_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | jq -r '.assets[] | select(.name | contains("ksud-x86_64-unknown-linux-musl")) | .browser_download_url')
