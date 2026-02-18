@@ -32,7 +32,7 @@ jobs:
         id: process
         run: |
           wget -q "${{ github.event.inputs.firmware_url }}" -O firmware.zip
-          LIST=$(./payload-dumper-go -l firmware.zip)
+          LIST=$(payload-dumper-go -l firmware.zip)
 
           if echo "$LIST" | grep -q "vendor_boot"; then
             payload-dumper-go -p vendor_boot firmware.zip
