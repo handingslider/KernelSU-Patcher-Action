@@ -1,89 +1,148 @@
-name: KernelSU Patcher Action
+name: KernelSU Auto Root (OTA ZIP Support)
+
 on:
   workflow_dispatch:
     inputs:
       firmware_url:
-        description: 'URL to firmware (zip/payload.bin)'
+        description: "Direct link to firmware OTA ZIP"
         required: true
         type: string
 
 jobs:
-  patch:
+  root:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Tools
+      # ------------------------------------------------
+      # Install dependencies
+      # ------------------------------------------------
+      - name: Install dependencies
         run: |
-          DUMP_URL=$(curl -s https://api.github.com/repos/ssut/payload-dumper-go/releases/latest | jq -r '.assets[] | select(.name | contains("linux_amd64")) | .browser_download_url')
-          wget -q $DUMP_URL -O dumper.tar.gz && tar -xzf dumper.tar.gz
-          sudo mv payload-dumper-go /usr/local/bin/
+          sudo apt update
+          sudo apt install -y wget curl unzip xz-utils
 
-          wget -q https://raw.githubusercontent.com/handingslider/HyperOS-Port-Python/refs/heads/main/bin/linux/x86_64/magiskboot
+      # ------------------------------------------------
+      # Download OTA firmware ZIP
+      # ------------------------------------------------
+      - name: Download firmware ZIP
+        run: |
+          wget "${{ inputs.firmware_url }}" -O firmware.zip
+
+      # ------------------------------------------------
+      # Install payload-dumper-go
+      # ------------------------------------------------
+      - name: Install payload-dumper-go
+        run: |
+          wget https://github.com/ssut/payload-dumper-go/releases/latest/download/payload-dumper-go_linux_amd64.tar.gz
+          tar -xzf payload-dumper-go_linux_amd64.tar.gz
+          chmod +x payload-dumper-go
+
+      # ------------------------------------------------
+      # Extract images from ZIP directly
+      # ------------------------------------------------
+      - name: Extract boot/init_boot
+        run: |
+          mkdir extracted
+          ./payload-dumper-go -o extracted firmware.zip
+
+      # ------------------------------------------------
+      # Detect correct image
+      # ------------------------------------------------
+      - name: Detect boot image
+        run: |
+          if [ -f extracted/init_boot.img ]; then
+            echo "Using init_boot.img"
+            echo "IMG_NAME=extracted/init_boot.img" >> $GITHUB_ENV
+          elif [ -f extracted/boot.img ]; then
+            echo "Using boot.img"
+            echo "IMG_NAME=extracted/boot.img" >> $GITHUB_ENV
+          else
+            echo "❌ No boot image found"
+            exit 1
+          fi
+
+      # ------------------------------------------------
+      # Download latest ksud
+      # ------------------------------------------------
+      - name: Download latest ksud
+        run: |
+          curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest \
+          | grep browser_download_url \
+          | grep ksud-x86_64-unknown-linux-musl \
+          | cut -d '"' -f 4 \
+          | wget -i -
+
+          chmod +x ksud-x86_64-unknown-linux-musl
+          mv ksud-x86_64-unknown-linux-musl ksud
+
+      # ------------------------------------------------
+      # Download your magiskboot binary
+      # ------------------------------------------------
+      - name: Download magiskboot
+        run: |
+          wget https://raw.githubusercontent.com/handingslider/HyperOS-Port-Python/refs/heads/main/bin/linux/x86_64/magiskboot
           chmod +x magiskboot
-          sudo mv magiskboot /usr/local/bin/
 
-          KSU_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | jq -r '.assets[] | select(.name | contains("ksud-x86_64-unknown-linux-musl")) | .browser_download_url')
-          wget -q $KSU_URL -O ksud
-          chmod +x ksud
-          sudo mv ksud /usr/local/bin/
-
-      - name: Extract & Detect
-        id: process
+      # ------------------------------------------------
+      # Unpack image
+      # ------------------------------------------------
+      - name: Unpack image
         run: |
-          mkdir -p output
-          wget -q "${{ github.event.inputs.firmware_url }}" -O firmware.zip
-          
-          if payload-dumper-go -l firmware.zip | grep -q "vendor_boot"; then
-            payload-dumper-go -o output/ -p vendor_boot firmware.zip
-            find output/ -name "vendor_boot.img" -exec mv {} ./vendor_boot.img \;
-            cp vendor_boot.img check_kmi.img
-          fi
-          
-          if payload-dumper-go -l firmware.zip | grep -q "init_boot"; then
-            payload-dumper-go -o output/ -p init_boot firmware.zip
-            find output/ -name "init_boot.img" -exec mv {} ./init_boot.img \;
-            [ ! -f check_kmi.img ] && cp init_boot.img check_kmi.img
-            echo "target_primary=init_boot.img" >> $GITHUB_OUTPUT
-          else
-            payload-dumper-go -o output/ -p boot firmware.zip
-            find output/ -name "boot.img" -exec mv {} ./boot.img \;
-            [ ! -f check_kmi.img ] && cp boot.img check_kmi.img
-            echo "target_primary=boot.img" >> $GITHUB_OUTPUT
-          fi
+          ./magiskboot unpack $IMG_NAME
 
-      - name: Resolve KMI
-        id: kmi_logic
+      - name: Decompress kernel if needed
         run: |
-          magiskboot unpack check_kmi.img
-          
           if [ -f kernel ]; then
-             KMI=$(strings kernel | grep -E "android[0-9]+-[0-9]+\.[0-9]+" | head -n 1 | cut -d' ' -f1)
-          fi
-          
-          if [ -z "$KMI" ]; then
-            KMI=$(strings check_kmi.img | grep -E "android[0-9]+-[0-9]+\.[0-9]+" | head -n 1 | cut -d' ' -f1)
+            ./magiskboot decompress kernel || true
           fi
 
-          echo "Detected KMI: $KMI"
-          echo "kmi=$KMI" >> $GITHUB_OUTPUT
-          
-          if [[ "$KMI" == *"6.6"* || "$KMI" == *"6.12"* ]]; then
-            echo "final_target=vendor_boot.img" >> $GITHUB_OUTPUT
-          else
-            echo "final_target=${{ steps.process.outputs.target_primary }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Patch with ksud
+      # ------------------------------------------------
+      # Detect KMI from real kernel
+      # ------------------------------------------------
+      - name: Detect KMI
         run: |
-          TARGET="${{ steps.kmi_logic.outputs.final_target }}"
-          KMI_VAL="${{ steps.kmi_logic.outputs.kmi }}"
-          ksud boot-patch -b "$TARGET" --kmi "$KMI_VAL"
-          mv "$TARGET" "ksu_patched_${KMI_VAL}.img"
+          if [ -f kernel_d ]; then
+            TARGET_KERNEL="kernel_d"
+          elif [ -f kernel ]; then
+            TARGET_KERNEL="kernel"
+          else
+            echo "❌ Kernel not found"
+            exit 1
+          fi
 
-      - name: Upload
+          VERSION=$(strings $TARGET_KERNEL | grep -m1 "Linux version")
+          echo "Detected: $VERSION"
+
+          if echo "$VERSION" | grep -q "5.10"; then
+            echo "KMI=5.10" >> $GITHUB_ENV
+          elif echo "$VERSION" | grep -q "5.15"; then
+            echo "KMI=5.15" >> $GITHUB_ENV
+          elif echo "$VERSION" | grep -q "6.1"; then
+            echo "KMI=6.1" >> $GITHUB_ENV
+          else
+            echo "❌ Unsupported KMI"
+            exit 1
+          fi
+
+      # ------------------------------------------------
+      # Patch with KernelSU
+      # ------------------------------------------------
+      - name: Patch image
+        run: |
+          cp $IMG_NAME original.img
+
+          ./ksud boot-patch \
+            --boot original.img \
+            --kmi $KMI \
+            --magiskboot ./magiskboot \
+            --out rooted.img
+
+      # ------------------------------------------------
+      # Upload result
+      # ------------------------------------------------
+      - name: Upload rooted image
         uses: actions/upload-artifact@v4
         with:
-          name: KSU-Patched-${{ steps.kmi_logic.outputs.kmi }}
-          path: ksu_patched_*.img
+          name: KernelSU-rooted-image
+          path: rooted.img
