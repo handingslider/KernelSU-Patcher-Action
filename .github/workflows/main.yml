@@ -28,38 +28,40 @@ jobs:
           wget -q $KSU_URL -O ksud
           chmod +x ksud
           sudo mv ksud /usr/local/bin/
+
       - name: Extract & Detect
         id: process
         run: |
           wget -q "${{ github.event.inputs.firmware_url }}" -O firmware.zip
-          LIST=$(payload-dumper-go -l firmware.zip)
-
-          if echo "$LIST" | grep -q "vendor_boot"; then
+          
+          if payload-dumper-go -l firmware.zip | grep -q "vendor_boot"; then
             payload-dumper-go -p vendor_boot firmware.zip
-            mv output/vendor_boot.img check_kmi.img
-            echo "found_vendor=true" >> $GITHUB_OUTPUT
+            find output/ -name "vendor_boot.img" -exec mv {} ./vendor_boot.img \;
+            cp vendor_boot.img check_kmi.img
           fi
           
-          if echo "$LIST" | grep -q "init_boot"; then
+          if payload-dumper-go -l firmware.zip | grep -q "init_boot"; then
             payload-dumper-go -p init_boot firmware.zip
-            mv output/init_boot.img patch_target.img
-            [ ! -f check_kmi.img ] && cp patch_target.img check_kmi.img
+            find output/ -name "init_boot.img" -exec mv {} ./init_boot.img \;
+            [ ! -f check_kmi.img ] && cp init_boot.img check_kmi.img
+            echo "target_primary=init_boot.img" >> $GITHUB_OUTPUT
           else
             payload-dumper-go -p boot firmware.zip
-            mv output/boot.img patch_target.img
-            [ ! -f check_kmi.img ] && cp patch_target.img check_kmi.img
+            find output/ -name "boot.img" -exec mv {} ./boot.img \;
+            [ ! -f check_kmi.img ] && cp boot.img check_kmi.img
+            echo "target_primary=boot.img" >> $GITHUB_OUTPUT
           fi
 
       - name: Resolve KMI
         id: kmi_logic
         run: |
           magiskboot unpack check_kmi.img
+          
           if [ -f kernel ]; then
              KMI=$(strings kernel | grep -E "android[0-9]+-[0-9]+\.[0-9]+" | head -n 1 | cut -d' ' -f1)
           fi
           
           if [ -z "$KMI" ]; then
-            echo "Detection failed, searching more broadly..."
             KMI=$(strings check_kmi.img | grep -E "android[0-9]+-[0-9]+\.[0-9]+" | head -n 1 | cut -d' ' -f1)
           fi
 
@@ -67,19 +69,20 @@ jobs:
           echo "kmi=$KMI" >> $GITHUB_OUTPUT
           
           if [[ "$KMI" == *"6.6"* || "$KMI" == *"6.12"* ]]; then
-            echo "target=vendor_boot.img" >> $GITHUB_OUTPUT
-            mv check_kmi.img final_target.img
+            echo "final_target=vendor_boot.img" >> $GITHUB_OUTPUT
           else
-            echo "target=init_boot_or_boot.img" >> $GITHUB_OUTPUT
-            mv patch_target.img final_target.img
+            echo "final_target=${{ steps.process.outputs.target_primary }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Patch with ksud
         run: |
-          ksud boot-patch -b final_target.img --kmi ${{ steps.kmi_logic.outputs.kmi }}
+          TARGET="${{ steps.kmi_logic.outputs.final_target }}"
+          KMI_VAL="${{ steps.kmi_logic.outputs.kmi }}"
+          ksud boot-patch -b "$TARGET" --kmi "$KMI_VAL"
+          mv "$TARGET" "ksu_patched_${KMI_VAL}.img"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: KSU-Patched-${{ steps.kmi_logic.outputs.kmi }}
-          path: "*.img"
+          path: ksu_patched_*.img
