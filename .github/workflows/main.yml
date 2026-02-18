@@ -16,20 +16,18 @@ jobs:
 
       - name: Install Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl jq unzip p7zip 
-          
           DUMP_URL=$(curl -s https://api.github.com/repos/ssut/payload-dumper-go/releases/latest | jq -r '.assets[] | select(.name | contains("linux_amd64")) | .browser_download_url')
           wget -q $DUMP_URL -O dumper.tar.gz && tar -xzf dumper.tar.gz
-          
-          MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
-          wget -q $MAGISK_URL -O magisk.apk
-          7z e -y magisk.apk "lib/x86_64/libmagiskboot.so"
-          mv libmagiskboot.so magiskboot && chmod +x magiskboot
+          sudo mv payload-dumper-go /usr/local/bin/
+
+          wget -q https://raw.githubusercontent.com/handingslider/HyperOS-Port-Python/refs/heads/main/bin/linux/x86_64/magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
 
           KSU_URL=$(curl -s https://api.github.com/repos/tiann/KernelSU/releases/latest | jq -r '.assets[] | select(.name | contains("ksud-x86_64-unknown-linux-musl")) | .browser_download_url')
-          wget -q $KSU_URL -O ksud && chmod +x ksud
-
+          wget -q $KSU_URL -O ksud
+          chmod +x ksud
+          sudo mv ksud /usr/local/bin/
       - name: Extract & Detect
         id: process
         run: |
@@ -37,17 +35,17 @@ jobs:
           LIST=$(./payload-dumper-go -l firmware.zip)
 
           if echo "$LIST" | grep -q "vendor_boot"; then
-            ./payload-dumper-go -p vendor_boot firmware.zip
+            payload-dumper-go -p vendor_boot firmware.zip
             mv output/vendor_boot.img check_kmi.img
             echo "found_vendor=true" >> $GITHUB_OUTPUT
           fi
           
           if echo "$LIST" | grep -q "init_boot"; then
-            ./payload-dumper-go -p init_boot firmware.zip
+            payload-dumper-go -p init_boot firmware.zip
             mv output/init_boot.img patch_target.img
             [ ! -f check_kmi.img ] && cp patch_target.img check_kmi.img
           else
-            ./payload-dumper-go -p boot firmware.zip
+            payload-dumper-go -p boot firmware.zip
             mv output/boot.img patch_target.img
             [ ! -f check_kmi.img ] && cp patch_target.img check_kmi.img
           fi
@@ -55,7 +53,7 @@ jobs:
       - name: Resolve KMI
         id: kmi_logic
         run: |
-          ./magiskboot unpack check_kmi.img
+          magiskboot unpack check_kmi.img
           if [ -f kernel ]; then
              KMI=$(strings kernel | grep -E "android[0-9]+-[0-9]+\.[0-9]+" | head -n 1 | cut -d' ' -f1)
           fi
@@ -78,7 +76,7 @@ jobs:
 
       - name: Patch with ksud
         run: |
-          ./ksud boot-patch -b final_target.img --kmi ${{ steps.kmi_logic.outputs.kmi }}
+          ksud boot-patch -b final_target.img --kmi ${{ steps.kmi_logic.outputs.kmi }}
 
       - name: Upload
         uses: actions/upload-artifact@v4
